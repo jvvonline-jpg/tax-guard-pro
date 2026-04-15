@@ -198,7 +198,18 @@ def detect_hits_ocr(
 
     hits: List[Hit] = []
     dpi = cfg.ocr_dpi
-    images = convert_from_bytes(pdf_bytes, dpi=dpi)
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=dpi)
+    except Exception as e:
+        # Most common cause: Poppler not installed / not on PATH.
+        raise RuntimeError(
+            "Unable to rasterize PDF for OCR. Poppler is likely missing.\n\n"
+            "• macOS: `brew install poppler`\n"
+            "• Debian/Ubuntu: `sudo apt-get install poppler-utils`\n"
+            "• Streamlit Cloud: add a `packages.txt` file containing "
+            "`poppler-utils` and `tesseract-ocr`, then redeploy.\n\n"
+            f"Underlying error: {e}"
+        ) from e
 
     for page_index, img in enumerate(images):
         if page_index >= len(doc):
@@ -292,19 +303,29 @@ def detect_hits(
         text_hits = detect_hits_text_layer(doc, cfg)
         hits.extend(h for h in text_hits if h.page_index in pages_with_text)
 
+    ocr_error: Optional[str] = None
     if pages_needing_ocr:
-        ocr_hits = detect_hits_ocr(pdf_bytes, doc, cfg)
-        hits.extend(h for h in ocr_hits if h.page_index in pages_needing_ocr)
-        ocr_pages = pages_needing_ocr
+        try:
+            ocr_hits = detect_hits_ocr(pdf_bytes, doc, cfg)
+            hits.extend(h for h in ocr_hits if h.page_index in pages_needing_ocr)
+            ocr_pages = pages_needing_ocr
+        except RuntimeError as e:
+            # OCR unavailable — keep whatever text-layer hits we found and
+            # surface the reason via session state for the UI to display.
+            ocr_error = str(e)
 
     if not pages_needing_ocr:
         mode = "text"
     elif not pages_with_text:
-        mode = "ocr"
+        mode = "ocr" if not ocr_error else "ocr-unavailable"
     else:
-        mode = "hybrid"
+        mode = "hybrid" if not ocr_error else "text-only (ocr-unavailable)"
 
     doc.close()
+    if ocr_error:
+        st.session_state["_ocr_error"] = ocr_error
+    else:
+        st.session_state.pop("_ocr_error", None)
     return hits, mode, ocr_pages
 
 
@@ -464,6 +485,12 @@ def main() -> None:
     c4.metric("Accounts", sum(1 for h in hits if h.kind == "ACCOUNT"))
     if ocr_pages:
         st.caption(f"OCR processed pages (1-indexed): {', '.join(str(i + 1) for i in ocr_pages)}")
+    if st.session_state.get("_ocr_error"):
+        st.warning(
+            "OCR is unavailable on this host, so scanned pages were not processed. "
+            "Searchable-text pages were still scanned.\n\n"
+            + st.session_state["_ocr_error"]
+        )
 
     # ------ Preview / Apply ------
     left, right = st.columns([3, 2])
