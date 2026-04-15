@@ -366,11 +366,19 @@ def apply_hard_redactions(pdf_bytes: bytes, hits: List[Hit]) -> bytes:
         for h in page_hits:
             # Black fill ensures the visual is also blacked out
             page.add_redact_annot(h.rect, fill=(0, 0, 0))
-        # Remove underlying text/image bytes
-        page.apply_redactions(
-            images=fitz.PDF_REDACT_IMAGE_PIXELS,
-            graphics=fitz.PDF_REDACT_LINE_ART_REMOVE,
+        # Remove underlying text/image bytes. Constant names vary across
+        # PyMuPDF versions — resolve them defensively with integer fallbacks.
+        images_flag = getattr(fitz, "PDF_REDACT_IMAGE_PIXELS", 2)
+        graphics_flag = getattr(
+            fitz,
+            "PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED",
+            getattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_COVERED", 2),
         )
+        try:
+            page.apply_redactions(images=images_flag, graphics=graphics_flag)
+        except TypeError:
+            # Older PyMuPDF: only `images` is accepted.
+            page.apply_redactions(images=images_flag)
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
     return out
